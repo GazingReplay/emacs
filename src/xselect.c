@@ -270,7 +270,9 @@ x_atom_to_symbol (struct x_display_info *dpyinfo, Atom atom)
 /* Do protocol to assert ourself as a selection owner.
    FRAME shall be the owner; it must be a valid X frame.
    TIMESTAMP should be the timestamp where selection ownership will be
-   assumed.
+   assumed; the caller must then check that the server took the claim.
+   If TIMESTAMP is zero, claim with the time of the last user input
+   event, or with the server's current time if the server ignores that.
    DND_DATA is the local value that will be used for selection requests
    with `dpyinfo->pending_dnd_time'.
    Update the Vselection_alist so that we can reply to later requests for
@@ -285,13 +287,37 @@ x_own_selection (Lisp_Object selection_name, Lisp_Object selection_value,
   struct x_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
   Display *display = dpyinfo->display;
   Atom selection_atom = symbol_to_x_atom (dpyinfo, selection_name);
+  bool user_time = !timestamp;
 
-  if (!timestamp)
+  if (user_time)
     timestamp = dpyinfo->last_user_time;
 
   block_input ();
   XSetSelectionOwner (display, selection_atom, selecting_window,
 		      timestamp);
+
+  /* The server ignores a claim older than the selection's last change,
+     which another client makes after the last input event Emacs saw
+     when Emacs claims from a timer, a process filter or the end of a
+     mouse drag (Bug#82091).  Verify the claim as ICCCM section 2.1
+     requires, and if the server ignored it, claim again at the server's
+     current time, which no earlier claim can postdate.  */
+  if (user_time
+      && XGetSelectionOwner (display, selection_atom) != selecting_window)
+    {
+      timestamp = x_get_server_time (f);
+      XSetSelectionOwner (display, selection_atom, selecting_window,
+			  timestamp);
+
+      /* Another client claimed the selection after Emacs read the
+	 server's time; its selection is the newer one.  */
+      if (XGetSelectionOwner (display, selection_atom)
+	  != selecting_window)
+	{
+	  unblock_input ();
+	  return;
+	}
+    }
   unblock_input ();
 
   /* Now update the local cache */
@@ -300,6 +326,20 @@ x_own_selection (Lisp_Object selection_name, Lisp_Object selection_value,
     Lisp_Object prev_value;
 
     prev_value = LOCAL_SELECTION (selection_name, dpyinfo);
+
+    /* After a claim at the server's time, the next claims with the user
+       time are older than the selection's last change, and the server
+       ignores them while Emacs remains the owner.  Keep the time of the
+       claim the server took: x_handle_selection_request compares
+       requests with it, and x_preserve_selections claims with it.  */
+    if (user_time && timestamp != CurrentTime && !NILP (prev_value))
+      {
+	Time prev_time;
+
+	CONS_TO_INTEGER (XCAR (XCDR (XCDR (prev_value))), Time, prev_time);
+	if (prev_time > timestamp)
+	  timestamp = prev_time;
+      }
 
     /* If the previous value contains alternative data for responding to
        programs that do not understand a specialized drag-and-drop
@@ -3363,6 +3403,10 @@ syms_of_xselect (void)
   defsubr (&Sx_send_client_message);
   defsubr (&Sx_register_dnd_atom);
   defsubr (&Sx_get_local_selection);
+
+  /* Lets Lisp code tell that `x-own-selection-internal' verifies its
+     claims (Bug#82091).  */
+  Fprovide (intern_c_string ("x-selection-claims-verified"), Qnil);
 
   reading_selection_reply = Fcons (Qnil, Qnil);
   staticpro (&reading_selection_reply);

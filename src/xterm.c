@@ -28704,7 +28704,7 @@ server_timestamp_predicate (Display *display, XEvent *xevent,
 /* Get the server time.  The X server is guaranteed to deliver the
    PropertyNotify event, so there is no reason to use x_if_event.  */
 
-static Time
+Time
 x_get_server_time (struct frame *f)
 {
   Atom property_atom;
