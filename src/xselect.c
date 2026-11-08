@@ -330,14 +330,19 @@ x_own_selection (Lisp_Object selection_name, Lisp_Object selection_value,
     /* After a claim at the server's time, the next claims with the user
        time are older than the selection's last change, and the server
        ignores them while Emacs remains the owner.  Keep the time of the
-       claim the server took: x_handle_selection_request compares
-       requests with it, and x_preserve_selections claims with it.  */
+       claim the server took: x_handle_selection_request and
+       x_handle_selection_clear compare events with it, and
+       x_preserve_selections claims with it.  X times are 32 bits and
+       wrap every 49.7 days, so compare them as the server does: the
+       later of two times is less than half that range ahead.  */
     if (user_time && timestamp != CurrentTime && !NILP (prev_value))
       {
 	Time prev_time;
+	uint32_t ahead;
 
 	CONS_TO_INTEGER (XCAR (XCDR (XCDR (prev_value))), Time, prev_time);
-	if (prev_time > timestamp)
+	ahead = prev_time - timestamp;
+	if (0 < ahead && ahead < UINT32_C (0x80000000))
 	  timestamp = prev_time;
       }
 
